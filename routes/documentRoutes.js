@@ -6,24 +6,8 @@ const fs = require('fs');
 const Document = require('../models/Document');
 const auth = require('../middleware/auth');
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Multer Storage Configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Generate unique prefix to avoid naming collisions
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const extension = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + extension);
-  }
-});
+// Multer Storage Configuration (Files stored in memory buffer, then saved to MongoDB)
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
@@ -59,7 +43,7 @@ router.post('/upload', auth, docUploadFields, async (req, res) => {
 
     const filesArray = [{
       originalName: frontFile.originalname,
-      filePath: frontFile.path,
+      fileData: frontFile.buffer,
       fileType: frontFile.mimetype,
       fileSize: frontFile.size,
       side: hasBackSide ? 'front' : 'single'
@@ -69,7 +53,7 @@ router.post('/upload', auth, docUploadFields, async (req, res) => {
       const backFile = req.files['backFile'][0];
       filesArray.push({
         originalName: backFile.originalname,
-        filePath: backFile.path,
+        fileData: backFile.buffer,
         fileType: backFile.mimetype,
         fileSize: backFile.size,
         side: 'back'
@@ -146,11 +130,22 @@ router.get('/download/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'File not found in document records' });
     }
 
-    if (!fs.existsSync(fileToDownload.filePath)) {
-      return res.status(404).json({ error: 'File does not exist on server filesystem' });
+    // First try downloading from database buffer
+    if (fileToDownload.fileData) {
+      res.setHeader('Content-Type', fileToDownload.fileType);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileToDownload.originalName)}"`);
+      return res.send(fileToDownload.fileData);
     }
 
-    res.download(fileToDownload.filePath, fileToDownload.originalName);
+    // Backward compatibility: If it's stored on disk
+    if (fileToDownload.filePath) {
+      if (!fs.existsSync(fileToDownload.filePath)) {
+        return res.status(404).json({ error: 'File does not exist on server filesystem' });
+      }
+      return res.download(fileToDownload.filePath, fileToDownload.originalName);
+    }
+
+    return res.status(404).json({ error: 'No file data available for download' });
   } catch (error) {
     console.error('Download Error:', error);
     res.status(500).json({ error: 'Server error downloading document' });

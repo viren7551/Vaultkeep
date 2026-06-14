@@ -7,6 +7,10 @@ const fileSchema = new mongoose.Schema({
   },
   filePath: {
     type: String,
+    required: false
+  },
+  fileData: {
+    type: Buffer,
     required: true
   },
   fileType: {
